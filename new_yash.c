@@ -7,8 +7,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <termios.h>
-#include "job.h"
-#include "process.h"
+#include <fcntl.h>
 
 const static int MAX_INPUTS = 20;
 
@@ -22,8 +21,8 @@ typedef struct process{
 	char** argv;			//for exec
 	char* output;
 	char* input;			
-	struct process *next;	//next process in pipeline
 	int redirectionFlag;
+	struct process* next; //next process in pipeline
 } process;
 
 typedef struct job{
@@ -128,7 +127,7 @@ int redirectionCheck(char* cmd, process* prc){
 	while(token != NULL){
 		parse = realloc(parse, ++count * sizeof(char*));
 		parse[count-1] = token;
-		printf("%s\n", parse[count-1]);
+		//printf("%s\n", parse[count-1]);
 		token = strtok(NULL, " ");
 	}
 
@@ -137,49 +136,84 @@ int redirectionCheck(char* cmd, process* prc){
 		if(strcmp(parse[i], "<") == 0){
 			prc->output = parse[i+1];
 			outRD=i;
-			printf(" > detected at %d\n", outRD);
 		}
 
 		else if(strcmp(parse[i], ">") == 0){
 			prc->input = parse[i+1];
 			inRD=i;
-			printf(" < detected at %d\n", inRD);
 		}
 	}
 
-	printf("output : %s\n", prc->output);
-	printf("input : %s\n", prc->input);
-
+	int i;
 	if(outRD == 0 && inRD == 0){
-		for(int i=0; i<count; i++){
+		for(i=0; i<count; i++){
 			prc->argv[i] = parse[i];
+			printf("argv[%d] : %s\n", i, prc->argv[i]);
 		}
+		prc->argv[i+1] = NULL;
+		return 0;
 	}
 
 	if(outRD!=0 && inRD == 0){
-		for(int i=0; i<outRD; i++){
+		for(i=0; i<outRD; i++){
 			prc->argv[i] = parse[i];
+			printf("argv[%d] : %s\n",i, prc->argv[i]);
 		}
+		prc->argv[i+1] = NULL;
+		return 1;
 	}
 
 	if(inRD!=0 && outRD == 0){
-		for(int i=0; i<inRD; i++){
+		for(i=0; i<inRD; i++){
 			prc->argv[i] = parse[i];
+			printf("argv[%d] : %s\n", i, prc->argv[i]);
 		}
+		prc->argv[i+1] = NULL;
+		return 1;
 	}
 
-	free(str);
+	//free(str);
+	//printf("exiting redirection check\n");
 
 }
+
+void print_process(process* proc) {
+	printf("PID: %d\n", proc->pid);
+	/*
+	for(int i = 0; i < 15; i++){
+		printf("ARGV : %s, ", (proc->argv)[i]);
+	}*/
+
+	printf("Input: %s\n", proc->input);
+	printf("Output: %s\n", proc->output);
+	printf("Err: %d\n", proc->redirectionFlag);
+}
+
 
 
 void create_a_process(char* cmd, process* prc){
+	prc->pid = 0;
 	prc->argv = malloc(sizeof(char*) * MAX_INPUTS);
 	prc->input = NULL;
 	prc->output = NULL;
+	prc->next = NULL;
 	prc->redirectionFlag = redirectionCheck(cmd, prc);		//parsing for redirection commands
-	prc->next = NULL;				//initialising pointer to next process in pipeline
+
+	print_process(prc);
+	
 }
+
+/*
+ *typedef struct process{
+	pid_t pid;
+	char** argv;			//for exec
+	char* output;
+	char* input;			
+	int redirectionFlag;
+	struct process* next; //next process in pipeline
+} process;
+*/
+
 
 void create_a_job(char* cmd, job* newJob, int fg, int ID){
 	process* processA = malloc(sizeof(process*));
@@ -196,57 +230,34 @@ void create_a_job(char* cmd, job* newJob, int fg, int ID){
 	}
 	else
 		create_a_process(piped[0], processA);
-	
+
 	newJob->jobString = cmd;
 	newJob->jobID = ID;
 	newJob->status = READY;
 	newJob->foreground = fg;
-	
+	newJob->processes = processA;
+
+	//print_process(processA);
+	//print_process(processB);
 }
 
-/*void run_process(process* p, int pgid, int infile, int outfile, int errfile, int foreground){
-	int pid;
-
-	if(shell_is_interactive){
-		pid = getpid();
-		if(pgid == 0)
-			pgid = pid;
-		setpgid(pid, pgid);
-
-		if(foreground)
-			tcsetpgrp(shell_terminal, pgid);
+void exec(process* p){
+	printf("entered exec\n");
+	int in; int out;
+	if(p->input){
+		in = open(p->input, O_RDONLY);
+		dup2(in, STDIN_FILENO);
+		close(in);
+	}
+	if(p->output){
+		out = creat(p->output, 0644);
+		dup2(out, STDOUT_FILENO);
+		close(out);
 	}
 
-	if (infile != STDIN_FILENO){
-     	dup2 (infile, STDIN_FILENO);
-      	close (infile);
-    }
-  
-  	if (outfile != STDOUT_FILENO){
-      	dup2 (outfile, STDOUT_FILENO);
-      	close (outfile);
-    }
-  		
-  	if (errfile != STDERR_FILENO){
-      	dup2 (errfile, STDERR_FILENO);
-      	close (errfile);
-    }
+	execvp(p->argv[0], p->argv);
 
-    execvp(p->argv[0], p->argv);
-    exit(1);
-	
-}*/
-
-/*void run_job(job* j, int foreground){
-	process* p;
-	int pid;
-	int pipe[2];
-	int infile;
-	int outfile;
-
-	infile = j->
-
-}*/
+}
 
 void init_shell(){
 	shell_terminal = STDIN_FILENO;
@@ -266,10 +277,89 @@ void init_shell(){
 	}
 }
 
+void run_process(process* p){
+	pid_t pid;
+
+	/*if(shell_is_interactive){
+		pid = getpid();
+		if(pgid ==0)
+			pgid = pid;
+		setpgid(pid, pgid);
+		if(foreground)
+			tcsetpgrp(shell_terminal, pgid);
+	}*/
+
+	execvp(p->argv[0], p->argv);
+}
+
+void run_job(job* j){
+
+	process* p1;
+	process* p2;
+	pid_t pid;
+	int pipefd[2]; 
+
+	int in; int out;
+	p1 = j->processes;
+
+	
+	pid = fork();
+
+	if(pid == 0){
+
+		if(p1->input){			//setting up input file redirects
+			in = open(p1->input, O_RDONLY);
+			dup2(in, STDIN_FILENO);
+			close(in);
+		}
+
+		if(p1->output){			//setting up output file redirects if they exist
+			out = creat(p1->output, 0644);
+			dup2(out, STDOUT_FILENO);
+			close(out);
+		}
+
+		run_process(p1);	//run process 1 after setting redirects
+	}
+	else {
+		if(p1->next){		//if there is a next process in the pipeline
+			if (pipe(pipefd) !=0)
+				printf("failed to create pipe\n");
+			dup2(pipefd[0], STDOUT_FILENO);	//set up output of process 1 to input of next process
+
+			pid = fork();
+			if(pid == 0){
+				run_process(p1);
+			}
+			else{
+				p2 = p1->next;	
+				if(p2->output){			//set up output file redirects
+					out = creat(p2->output, 0644);
+					dup2(out, STDOUT_FILENO);
+					close(out);
+				}
+				if(p2->input){			//setup input file redirects
+					in = open(p2->input, O_RDONLY);
+					dup2(in, STDIN_FILENO);
+					close(in);
+				}
+				else dup2(pipefd[1], STDIN_FILENO);	//if input file redirects do not exist, set up pipe
+
+				pid = fork();
+
+				if(pid == 0){
+					run_process(p2);	// run process 2
+				}
+			}
+		}
+	}	
+}
+
 int main(){
+
 	char* input;
 	char* piped[2];
-	job j;
+	job* j;
 	int blockingFLAG;
 	int parseFlag;
 	int jobID = 0;
@@ -277,21 +367,26 @@ int main(){
 	jobStack* stack = createStack(30);
 
 	init_shell();
+
 	while(1){
 		input = readline("$ ");
 		
 		blockingFLAG = parseForBlocking(input);
 
 		jobID++;
-		create_a_job(input, &j, blockingFLAG, jobID);
-		push(stack, j);
-		
-		if(blockingFLAG==0){
 
-		}
+		j = malloc(sizeof(job));
+		create_a_job(input, j, blockingFLAG, jobID);
+		push(stack, *j);
+		run_job(j);
+		
+		
 		
 
 	}
 }
+
+
+
 
 
