@@ -134,7 +134,7 @@ int parseForPipe(char* cmd, char** piped){
 }
 
 int redirectionCheck(char* cmd, process* prc){		
-	printf("***********REDIRECTION CHECK**************\n");
+	//printf("***********REDIRECTION CHECK**************\n");
 
 	char* str = malloc(sizeof(cmd));
 	int count = 0; int size = 1; int inRD = 0; int outRD = 0;
@@ -169,7 +169,7 @@ int redirectionCheck(char* cmd, process* prc){
 	if(outRD == 0 && inRD == 0){
 		for(i=0; i<count; i++){
 			prc->argv[i] = parse[i];
-			printf("argv[%d] : %s\n", i, prc->argv[i]);
+			//printf("argv[%d] : %s\n", i, prc->argv[i]);
 		}
 		prc->argv[i+1] = NULL;
 		return 0;
@@ -178,7 +178,7 @@ int redirectionCheck(char* cmd, process* prc){
 	if(outRD!=0 && inRD == 0){
 		for(i=0; i<outRD; i++){
 			prc->argv[i] = parse[i];
-			printf("argv[%d] : %s\n",i, prc->argv[i]);
+			//printf("argv[%d] : %s\n",i, prc->argv[i]);
 		}
 		prc->argv[i+1] = NULL;
 		return 1;
@@ -187,7 +187,7 @@ int redirectionCheck(char* cmd, process* prc){
 	if(inRD!=0 && outRD == 0){
 		for(i=0; i<inRD; i++){
 			prc->argv[i] = parse[i];
-			printf("argv[%d] : %s\n", i, prc->argv[i]);
+			//printf("argv[%d] : %s\n", i, prc->argv[i]);
 		}
 		prc->argv[i+1] = NULL;
 		return 1;
@@ -195,11 +195,12 @@ int redirectionCheck(char* cmd, process* prc){
 
 }
 
+
 void print_process(process* proc) {
 	printf("*********PRINTING PROCESS***********\n");
 	printf("PID: %d\n", proc->pid);
 	
-	for(int i = 0; i < 15; i++){
+	for(int i = 0; i < 7; i++){
 		printf("ARGV : %s, ", (proc->argv)[i]);
 	}
 
@@ -208,6 +209,9 @@ void print_process(process* proc) {
 	printf("redirectionFlag: %d\n", proc->redirectionFlag);
 }
 
+void put_job_in_fg(job* j, int cont){
+	tcsetpgrp(shell_terminal, j->pgid);
+}
 
 
 void create_a_process(char* cmd, process* prc){
@@ -218,7 +222,7 @@ void create_a_process(char* cmd, process* prc){
 	prc->next = NULL;
 	prc->redirectionFlag = redirectionCheck(cmd, prc);		//parsing for redirection commands
 	
-	print_process(prc);
+	//print_process(prc);
 	
 }
 
@@ -247,7 +251,7 @@ void create_a_job(char* cmd, job* newJob, int fg){
 	newJob->foreground = fg;
 	newJob->process = processA;
 
-	printf("*******CREATED JOB*******\n");
+	//printf("*******CREATED JOB*******\n");
 }
 
 void run_process(process* p){
@@ -260,67 +264,80 @@ void run_job(job* j){
 	process* p2;
 	pid_t pid;
 	int pipefd[2]; 
-
 	int in; int out;
+
 	p1 = j->process;
 
-	//print_process(p1);
-	pid = fork();
+	if(!(p1->next)){		//if only process 1 exists
 
-	if(pid == 0){
+		pid = fork();
 
-		if(p1->input){			//setting up input file redirects
+		if(pid == 0){
+
+			if(p1->input){			//setting up input file redirects if they exist
 			in = open(p1->input, O_RDONLY);
-			perror("ERROR : \n");
 			dup2(in, STDIN_FILENO);
 			close(in);
-		}
+			}
 
-		if(p1->output){			//setting up output file redirects if they exist
-			out = creat(p1->output, 0644);
-			perror("ERRORV : \n");
-			dup2(out, STDOUT_FILENO);
-			close(out);
-		}
+			if(p1->output){			//setting up output file redirects if they exist
+				out = creat(p1->output, 0644);
+				dup2(out, STDOUT_FILENO);
+				close(out);
+			}
 
-		printf("*******RUNNING PROCESS 1 *********");
-		run_process(p1);	//run process 1 after setting redirects
+			run_process(p1);	//run process 1 after setting redirects
+		}
 	}
+	
 	else {
 		if(p1->next){		//if there is a next process in the pipeline
 
 			if (pipe(pipefd) !=0)
 				printf("failed to create pipe\n");
 
-			dup2(pipefd[0], STDOUT_FILENO);	//set up output of process 1 to input of next process
-
 			pid = fork();
 
 			if(pid == 0){
-				run_process(p1);
+
+				if(!(p1->output)){				//if there is no output redirect file
+					dup2(pipefd[1], STDOUT_FILENO);	//set up output of process 1 to input of next process
+					run_process(p1);
+				}
+				else{
+					out = creat(p1->output, 0644);	//otherwise, set up output redirects
+					dup2(out, STDOUT_FILENO);
+					close(out);
+					run_process(p1);
+				}
+
 			}
 			else{
 				p2 = p1->next;	
-				if(p2->output){			//set up output file redirects
-					out = creat(p2->output, 0644);
-					dup2(out, STDOUT_FILENO);
-					close(out);
-				}
-				if(p2->input){			//setup input file redirects
-					in = open(p2->input, O_RDONLY);
-					dup2(in, STDIN_FILENO);
-					close(in);
-				}
-				else dup2(pipefd[1], STDIN_FILENO);	//if input file redirects do not exist, set up pipe
-
+				
 				pid = fork();
 
 				if(pid == 0){
+
+					if(p2->input){			//setup input file redirects
+						in = open(p2->input, O_RDONLY);
+						dup2(in, STDIN_FILENO);
+						close(in);
+					}
+					else dup2(pipefd[0], STDIN_FILENO);	//if input file redirects do not exist, set up input of process 2 to output of pipe
+
+					if(p2->output){			//set up output file redirects
+						out = creat(p2->output, 0644);
+						dup2(out, STDOUT_FILENO);
+						close(out);
+					}
+					
 					run_process(p2);	// run process 2
 				}
 			}
 		}
-	}	
+	}
+
 }
 
 int main(){
@@ -349,11 +366,5 @@ int main(){
 
 	}
 }
-
-
-
-
-
-
 
 
