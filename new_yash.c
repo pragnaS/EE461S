@@ -82,6 +82,23 @@ job peek(jobStack* pt){
 	return pt->items[pt->top];
 }
 
+void init_shell(){
+	shell_terminal = STDIN_FILENO;
+	shell_is_interactive = isatty(shell_terminal);
+
+	if(shell_is_interactive){
+		while(tcgetpgrp(shell_terminal) != (shell_pgid = getpgrp()))
+			kill (- shell_pgid, SIGTTIN);
+
+		shell_pgid = getpid();
+		if(setpgid(shell_pgid, shell_pgid) < 0){
+			perror("COuldn't put shell in its own process group");
+			exit(1);
+		}
+
+		tcsetpgrp(shell_terminal, shell_pgid);
+	}
+}
 
 int parseForBlocking(char* cmd){		//checking for '&' at the end of command
 
@@ -117,20 +134,24 @@ int parseForPipe(char* cmd, char** piped){
 }
 
 int redirectionCheck(char* cmd, process* prc){		
+	printf("***********REDIRECTION CHECK**************\n");
 
 	char* str = malloc(sizeof(cmd));
+	int count = 0; int size = 1; int inRD = 0; int outRD = 0;
+	char** parse = malloc(sizeof(char*));
+
 	strcpy(str, cmd);
 	char* token = strtok(str, " ");
-	int count = 0; int inRD = 0; int outRD = 0;
-	char** parse = NULL;
-	
+
 	while(token != NULL){
-		parse = realloc(parse, ++count * sizeof(char*));
-		parse[count-1] = token;
-		//printf("%s\n", parse[count-1]);
+		if(count == size) {		//if reached limit of parsed array, double the size of the array
+			size *= 2;
+			parse = realloc(parse, size * sizeof(char*));
+		}
+		parse[count++] = token;	//add token to parsed array
+		
 		token = strtok(NULL, " ");
 	}
-
 
 	for(int i=0; i<count; i++){
 		if(strcmp(parse[i], "<") == 0){
@@ -172,21 +193,19 @@ int redirectionCheck(char* cmd, process* prc){
 		return 1;
 	}
 
-	//free(str);
-	//printf("exiting redirection check\n");
-
 }
 
 void print_process(process* proc) {
+	printf("*********PRINTING PROCESS***********\n");
 	printf("PID: %d\n", proc->pid);
-	/*
+	
 	for(int i = 0; i < 15; i++){
 		printf("ARGV : %s, ", (proc->argv)[i]);
-	}*/
+	}
 
 	printf("Input: %s\n", proc->input);
 	printf("Output: %s\n", proc->output);
-	printf("Err: %d\n", proc->redirectionFlag);
+	printf("redirectionFlag: %d\n", proc->redirectionFlag);
 }
 
 
@@ -198,21 +217,10 @@ void create_a_process(char* cmd, process* prc){
 	prc->output = NULL;
 	prc->next = NULL;
 	prc->redirectionFlag = redirectionCheck(cmd, prc);		//parsing for redirection commands
-
+	
 	print_process(prc);
 	
 }
-
-/*
- *typedef struct process{
-	pid_t pid;
-	char** argv;			//for exec
-	char* output;
-	char* input;			
-	int redirectionFlag;
-	struct process* next; //next process in pipeline
-} process;
-*/
 
 
 void create_a_job(char* cmd, job* newJob, int fg){
@@ -224,7 +232,7 @@ void create_a_job(char* cmd, job* newJob, int fg){
 	int pipeFlag;
 
 	
-	pipeFlag = parseForPipe(cmd, piped);
+	pipeFlag = parseForPipe(cmd, process_string);
 	if(pipeFlag){
 		create_a_process(process_string[0], processA);
 		create_a_process(process_string[1], processB);
@@ -239,58 +247,10 @@ void create_a_job(char* cmd, job* newJob, int fg){
 	newJob->foreground = fg;
 	newJob->process = processA;
 
-	//print_process(processA);
-	//print_process(processB);
-}
-
-void exec(process* p){
-	printf("entered exec\n");
-	int in; int out;
-	if(p->input){
-		in = open(p->input, O_RDONLY);
-		dup2(in, STDIN_FILENO);
-		close(in);
-	}
-	if(p->output){
-		out = creat(p->output, 0644);
-		dup2(out, STDOUT_FILENO);
-		close(out);
-	}
-
-	execvp(p->argv[0], p->argv);
-
-}
-
-void init_shell(){
-	shell_terminal = STDIN_FILENO;
-	shell_is_interactive = isatty(shell_terminal);
-
-	if(shell_is_interactive){
-		while(tcgetpgrp(shell_terminal) != (shell_pgid = getpgrp()))
-			kill (- shell_pgid, SIGTTIN);
-
-		shell_pgid = getpid();
-		if(setpgid(shell_pgid, shell_pgid) < 0){
-			perror("COuldn't put shell in its own process group");
-			exit(1);
-		}
-
-		tcsetpgrp(shell_terminal, shell_pgid);
-	}
+	printf("*******CREATED JOB*******\n");
 }
 
 void run_process(process* p){
-	pid_t pid;
-
-	/*if(shell_is_interactive){
-		pid = getpid();
-		if(pgid ==0)
-			pgid = pid;
-		setpgid(pid, pgid);
-		if(foreground)
-			tcsetpgrp(shell_terminal, pgid);
-	}*/
-
 	execvp(p->argv[0], p->argv);
 }
 
@@ -302,34 +262,40 @@ void run_job(job* j){
 	int pipefd[2]; 
 
 	int in; int out;
-	p1 = j->processes;
+	p1 = j->process;
 
-	
+	//print_process(p1);
 	pid = fork();
 
 	if(pid == 0){
 
 		if(p1->input){			//setting up input file redirects
 			in = open(p1->input, O_RDONLY);
+			perror("ERROR : \n");
 			dup2(in, STDIN_FILENO);
 			close(in);
 		}
 
 		if(p1->output){			//setting up output file redirects if they exist
 			out = creat(p1->output, 0644);
+			perror("ERRORV : \n");
 			dup2(out, STDOUT_FILENO);
 			close(out);
 		}
 
+		printf("*******RUNNING PROCESS 1 *********");
 		run_process(p1);	//run process 1 after setting redirects
 	}
 	else {
 		if(p1->next){		//if there is a next process in the pipeline
+
 			if (pipe(pipefd) !=0)
 				printf("failed to create pipe\n");
+
 			dup2(pipefd[0], STDOUT_FILENO);	//set up output of process 1 to input of next process
 
 			pid = fork();
+
 			if(pid == 0){
 				run_process(p1);
 			}
@@ -374,7 +340,7 @@ int main(){
 		fg = parseForBlocking(input);
 
 		j = malloc(sizeof(job));
-		create_a_job(input, j, blockingFLAG, jobID);
+		create_a_job(input, j, fg);
 		push(stack, *j);
 		run_job(j);
 		
@@ -383,6 +349,7 @@ int main(){
 
 	}
 }
+
 
 
 
