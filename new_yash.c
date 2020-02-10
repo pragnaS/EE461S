@@ -31,7 +31,7 @@ typedef struct job{
 	pid_t pgid;
 	enum {READY, STOPPED, DONE} status;
 	int foreground;
-	process* processes;
+	process* process;
 
 } job;
 
@@ -215,27 +215,29 @@ void create_a_process(char* cmd, process* prc){
 */
 
 
-void create_a_job(char* cmd, job* newJob, int fg, int ID){
-	process* processA = malloc(sizeof(process*));
-	process* processB = malloc(sizeof(process*));
-	char* piped[2];
-	int parseFlag;
+void create_a_job(char* cmd, job* newJob, int fg){
+	static int jobID = 1;
+
+	process* processA = malloc(sizeof(process));
+	process* processB = malloc(sizeof(process));
+	char* process_string[2];
+	int pipeFlag;
 
 	
-	parseFlag = parseForPipe(cmd, piped);
-	if(parseFlag){
-		create_a_process(piped[0], processA);
-		create_a_process(piped[1], processB);
+	pipeFlag = parseForPipe(cmd, piped);
+	if(pipeFlag){
+		create_a_process(process_string[0], processA);
+		create_a_process(process_string[1], processB);
 		processA->next = processB;
 	}
 	else
-		create_a_process(piped[0], processA);
+		create_a_process(process_string[0], processA);
 
 	newJob->jobString = cmd;
-	newJob->jobID = ID;
+	newJob->jobID = jobID++;
 	newJob->status = READY;
 	newJob->foreground = fg;
-	newJob->processes = processA;
+	newJob->process = processA;
 
 	//print_process(processA);
 	//print_process(processB);
@@ -360,9 +362,7 @@ int main(){
 	char* input;
 	char* piped[2];
 	job* j;
-	int blockingFLAG;
-	int parseFlag;
-	int jobID = 0;
+	int fg;
 
 	jobStack* stack = createStack(30);
 
@@ -371,9 +371,7 @@ int main(){
 	while(1){
 		input = readline("$ ");
 		
-		blockingFLAG = parseForBlocking(input);
-
-		jobID++;
+		fg = parseForBlocking(input);
 
 		j = malloc(sizeof(job));
 		create_a_job(input, j, blockingFLAG, jobID);
@@ -385,6 +383,8 @@ int main(){
 
 	}
 }
+
+
 
 
 
