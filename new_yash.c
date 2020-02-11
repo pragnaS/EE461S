@@ -8,12 +8,15 @@
 #include <signal.h>
 #include <termios.h>
 #include <fcntl.h>
+#include <signal.h>
+
 
 const static int MAX_INPUTS = 20;
 
 int shell_pgid;
 int shell_terminal;
 int shell_is_interactive;
+int JOB_STATUS = 0;
 
 
 typedef struct process{
@@ -22,6 +25,7 @@ typedef struct process{
 	char* output;
 	char* input;			
 	int redirectionFlag;
+	enum {READY, STOPPED, TERMINATED, DONE} status;
 	struct process* next; //next process in pipeline
 } process;
 
@@ -29,23 +33,21 @@ typedef struct job{
 	char* jobString;
 	int jobID;
 	pid_t pgid;
-	enum {READY, STOPPED, DONE} status;
 	int foreground;
 	process* process;
-
 } job;
 
 typedef struct jobStack{
 	int top;
 	int maxsize;
-	job* items;
+	job** items;
 } jobStack;
 
 jobStack* createStack(int capacity){		//creating job stack
 	jobStack *stackPt = (jobStack*)malloc(sizeof(jobStack));
 	stackPt->maxsize = capacity;
 	stackPt->top = 0;
-	stackPt->items = (job*)malloc(sizeof(job)*capacity);
+	stackPt->items = (job**)malloc(sizeof(job*)*capacity);
 	return stackPt;
 }
 
@@ -61,7 +63,7 @@ int isFull(jobStack* pt){
 	return pt->top == pt->maxsize;
 }
 
-void push(jobStack* pt, job x){
+void push(jobStack* pt, job* x){
 	if(isFull(pt)){
 		printf("JOB STACK OVERFLOW\n");
 		exit(0);
@@ -70,7 +72,7 @@ void push(jobStack* pt, job x){
 	pt->top++;
 }
 
-job pop(jobStack* pt){
+job* pop(jobStack* pt){
 	if(isEmpty(pt)){
 		printf("UNDERFLOW\n");
 		exit(0);
@@ -78,9 +80,21 @@ job pop(jobStack* pt){
 	return pt->items[pt->top--];
 }
 
-job peek(jobStack* pt){
+job* peek(jobStack* pt){
 	return pt->items[pt->top];
 }
+
+/*void printStack(jobStack* pt){
+	job j;
+	int i;
+
+	i = pt->top;
+
+	for(j = pt->items[i]; j != NULL; i++){
+		printf("[%d]  PGID: %d  PID: %d  STATUS: %d  PROCESS: %s\n", j.jobID, j.process->pid, j.process->status, j.process->argv);
+		printf("[%d]  PGID: %d  PID: %d  STATUS: %d  PROCESS: %s\n", j.jobID, j.process->next->pid, j.process->next->status, j.process->next->argv);
+	}
+}*/
 
 void init_shell(){
 	shell_terminal = STDIN_FILENO;
@@ -108,11 +122,11 @@ int parseForBlocking(char* cmd){		//checking for '&' at the end of command
 	int i = 0;
 	while(token != NULL){
 		if(strcmp(token, "&")==0)
-			return 1;
+			return 0;
 		token = strtok(NULL, " ");
 	}
 	free(str);
-	return 0;
+	return 1;
 }
 
 int parseForPipe(char* cmd, char** piped){	
@@ -163,6 +177,10 @@ int redirectionCheck(char* cmd, process* prc){
 			prc->input = parse[i+1];
 			inRD=i;
 		}
+
+		if(strcmp(parse[i], "&") == 0)
+			parse[i] = NULL;
+
 	}
 
 	int i;
@@ -195,35 +213,47 @@ int redirectionCheck(char* cmd, process* prc){
 
 }
 
+void updateJobStatus(jobStack* stack){
+	int status;
+	int head = 0;
+	job* j;
+	process* prc;
+	pid_t pid;
 
-void print_process(process* proc) {
-	printf("*********PRINTING PROCESS***********\n");
-	printf("PID: %d\n", proc->pid);
-	
-	for(int i = 0; i < 7; i++){
-		printf("ARGV : %s, ", (proc->argv)[i]);
+	while(pid = waitpid(-1, &status, WUNTRACED | WNOHANG)){
+		while(!(j = (stack->items[head]))){
+			for(prc = j->process; prc; prc = prc->next){
+				if(prc->pid == pid){
+					prc->status = WIFSTOPPED(status) ? STOPPED : TERMINATED;
+					printf("JOB STATUS CHANGED TO : %d\n", prc->status);
+				}
+			}
+		}
 	}
-
-	printf("Input: %s\n", proc->input);
-	printf("Output: %s\n", proc->output);
-	printf("redirectionFlag: %d\n", proc->redirectionFlag);
 }
+		
+	
+void put_job_in_fg(pid_t pgid){
+	printf("job is executed in foreground\n");
+	pid_t pid1; pid_t pid2; int status;
 
-void put_job_in_fg(job* j, int cont){
-	tcsetpgrp(shell_terminal, j->pgid);
+	tcsetpgrp(shell_terminal, pgid);			//give terminal control to the job
+	pid1 = waitpid(-pgid, &status, WUNTRACED);	//wait for job processes to terminate
+	pid2 = waitpid(-pgid, &status, WUNTRACED);
+
+	tcsetpgrp(shell_terminal, shell_pgid);		//give terminal control back to shell
 }
 
 
 void create_a_process(char* cmd, process* prc){
+
 	prc->pid = 0;
 	prc->argv = malloc(sizeof(char*) * MAX_INPUTS);
 	prc->input = NULL;
 	prc->output = NULL;
 	prc->next = NULL;
 	prc->redirectionFlag = redirectionCheck(cmd, prc);		//parsing for redirection commands
-	
-	//print_process(prc);
-	
+	prc->status = READY;	
 }
 
 
@@ -247,15 +277,8 @@ void create_a_job(char* cmd, job* newJob, int fg){
 
 	newJob->jobString = cmd;
 	newJob->jobID = jobID++;
-	newJob->status = READY;
 	newJob->foreground = fg;
 	newJob->process = processA;
-
-	//printf("*******CREATED JOB*******\n");
-}
-
-void run_process(process* p){
-	execvp(p->argv[0], p->argv);
 }
 
 void run_job(job* j){
@@ -273,6 +296,9 @@ void run_job(job* j){
 		pid = fork();
 
 		if(pid == 0){
+			printf("entered child\n");
+			setpgid(pid, pid);	//setting the pid of the child to the pgid of the parent
+			j->pgid = pid; //recording the parent pgid as the job pgid
 
 			if(p1->input){			//setting up input file redirects if they exist
 			in = open(p1->input, O_RDONLY);
@@ -285,13 +311,20 @@ void run_job(job* j){
 				dup2(out, STDOUT_FILENO);
 				close(out);
 			}
+			printf("executing command \n");
+			execvp(p1->argv[0], p1->argv);	//run process 1 after setting redirects
+		} 
+		else if(pid>0){
+			printf("returned to parent \n");
+			setpgid(pid, pid);	//setting the pid of the child to the pgid of the parent
+			j->pgid = pid; //recording the parent pgid as the job pgid
 
-			run_process(p1);	//run process 1 after setting redirects
+			p1->pid = pid;	//setting process 1 pid to be the pgid
 		}
+		
 	}
 	
-	else {
-		if(p1->next){		//if there is a next process in the pipeline
+	else if(p1->next){		//if there is a next process in the pipeline
 
 			if (pipe(pipefd) !=0)
 				printf("failed to create pipe\n");
@@ -300,21 +333,29 @@ void run_job(job* j){
 
 			if(pid == 0){
 
+				setpgid(pid, pid);
+				j->pgid = pid;
+
 				if(!(p1->output)){				//if there is no output redirect file
 					dup2(pipefd[1], STDOUT_FILENO);	//set up output of process 1 to input of next process
-					run_process(p1);
+					execvp(p1->argv[0], p1->argv);
 				}
 				else{
 					out = creat(p1->output, 0644);	//otherwise, set up output redirects
 					dup2(out, STDOUT_FILENO);
 					close(out);
-					run_process(p1);
+					execvp(p1->argv[0], p1->argv);
 				}
 
 			}
-			else{
+			else if(pid>0){
+
+				setpgid(pid, pid);
+				j->pgid = pid;
+
+				p1->pid = pid;
+
 				p2 = p1->next;	
-				
 				pid = fork();
 
 				if(pid == 0){
@@ -332,12 +373,25 @@ void run_job(job* j){
 						close(out);
 					}
 					
-					run_process(p2);	// run process 2
+					execvp(p2->argv[0], p2->argv);	// run process 2
 				}
-			}
-		}
-	}
+				else if(pid>0){
+					p2->pid = pid; //storing the child's process id (that was returned in the parent) 
 
+				}
+
+			}
+	}
+	if(j->foreground){
+		put_job_in_fg(j->pgid);
+	}
+	
+}
+
+
+void sigCHLDHandler(int signum){
+	printf("in the handler\n");
+	JOB_STATUS = 1;
 }
 
 int main(){
@@ -351,19 +405,23 @@ int main(){
 
 	init_shell();
 
+	signal(SIGINT, SIG_IGN);
+	signal(SIGTTOU, SIG_IGN);
+	signal(SIGCHLD, sigCHLDHandler);
+
 	while(1){
 		input = readline("$ ");
-		
+
+		if(JOB_STATUS)
+			updateJobStatus(stack);
+
 		fg = parseForBlocking(input);
 
 		j = malloc(sizeof(job));
 		create_a_job(input, j, fg);
-		push(stack, *j);
+		push(stack, j);
 		run_job(j);
-		
-		
-		
-
+		//printStack(stack);
 	}
 }
 
