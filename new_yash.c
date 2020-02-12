@@ -11,16 +11,15 @@
 #include <signal.h>
 #include <stdbool.h>
 
-
-
 const static int MAX_INPUTS = 20;
 
 int shell_pgid;
 int shell_terminal;
 int shell_is_interactive;
-int JOB_STATUS = 0;
+int FOREGROUND;
+int UPDATE_JOBS;
 
-enum status{RUNNING, STOPPED, TERMINATED, DONE};
+enum status{RUNNING, STOPPED, DONE};
 
 typedef struct process{
 	pid_t pid;
@@ -37,7 +36,6 @@ typedef struct job{
 	char* jobString;
 	int jobID;
 	pid_t pgid;
-	int foreground;
 	process* process;
 } job;
 
@@ -63,7 +61,7 @@ bool isEmpty(){
 	return head == NULL;
 }
 
-job* pop(jobNode* head){
+jobNode* pop(){
 	jobNode* temp;
 
 	if(isEmpty()){
@@ -72,8 +70,7 @@ job* pop(jobNode* head){
 	}
 	else{
 		temp = head;
-		head = head->next;
-		head->next = NULL;
+		head = temp->next;
 		free(temp);
 	}
 }
@@ -98,7 +95,7 @@ void printJob(job* j){
 	char fg;
 	char* command;
 
-	if(j->foreground)
+	if(j == head->job)
 		fg = '+';
 	else
 		fg = '-';
@@ -109,8 +106,6 @@ void printJob(job* j){
 				strcpy(jobStatus,"RUNNING");
 			else if(j->process->next->proc_state == 1)
 				strcpy(jobStatus, "STOPPED");
-			else if(j->process->next->proc_state == 2)
-				strcpy(jobStatus, "TERMINATED");
 
 		}
 		strcpy(jobStatus,"RUNNING");
@@ -118,11 +113,11 @@ void printJob(job* j){
 	else if(j->process->proc_state == 1)
 			strcpy(jobStatus,"STOPPED");
 	else if(j->process->proc_state == 2)
-			strcpy(jobStatus, "TERMINATED");
+			strcpy(jobStatus, "DONE");
 
 	command = j->jobString;
 
-	printf("[%d] %c %s       %s\n", ID, fg, jobStatus, command);
+	printf("[%d]%c %s       %s\n", ID, fg, jobStatus, command);
 
 }
 
@@ -134,7 +129,35 @@ void printStack(jobNode* head){
 	printJob(head->job);
 }
 
+void update_job_stack(){
+	jobNode* prev;
+
+	if(head == NULL)
+		return;
+
+	while(head->job->process->proc_state == DONE){
+		printf("[%d]+ Done\t%s\n", head->job->jobID, head->job->jobString);
+		head = head->next;
+		if(head == NULL) return;
+	}
+
+	for(jobNode* j = head; j; j=j->next){
+		for(process* prc = j->job->process; prc; prc = prc->next){
+			if(prc->proc_state == DONE){
+				printf("[%d]+ Done\t%s\n", j->job->jobID, j->job->jobString);
+				prev->next = j->next;
+			}
+		}
+		
+		prev = j;
+	}
+}
+
 void init_shell(){
+	head = NULL;
+	UPDATE_JOBS = 0;
+	FOREGROUND = 0;
+
 	shell_terminal = STDIN_FILENO;
 	shell_is_interactive = isatty(shell_terminal);
 
@@ -153,12 +176,15 @@ void init_shell(){
 }
 
 int parseForBlocking(char* cmd){		//checking for '&' at the end of command
+	int cmdlen = strlen(cmd);
+	char* str = malloc(cmdlen + 1);
 
-	char* str = malloc(sizeof(cmd)+1);
 	strcpy(str, cmd);
+
 	char* token = strtok(str, " ");
 	int i = 0;
 	while(token != NULL){
+		
 		if(strcmp(token, "&")==0)
 			return 0;
 		token = strtok(NULL, " ");
@@ -169,7 +195,7 @@ int parseForBlocking(char* cmd){		//checking for '&' at the end of command
 
 int parseForPipe(char* cmd, char** piped){	
 	int i;
-	char* str = malloc(sizeof(cmd)+1);
+	char* str = malloc((strlen(cmd))+1);
 	strcpy(str, cmd);
 
 	for(i=0; i<2; i++){
@@ -180,7 +206,6 @@ int parseForPipe(char* cmd, char** piped){
 	free(str);
 
 	if(piped[1] == NULL) {
-		//printf("no pipe\n");
 		return 0;
 	}
 	else
@@ -188,23 +213,20 @@ int parseForPipe(char* cmd, char** piped){
 }
 
 char** parseCommand(char* cmd){
-	char* str = malloc(sizeof(cmd)+1);
+	char* str = malloc((strlen(cmd))+1);
 	int count = 0;
 	char* storeWord;
-	char** parse = malloc(MAX_INPUTS*sizeof(char*));
+	char** parse = malloc(MAX_INPUTS * sizeof(char*));
 
 	strcpy(str, cmd);
 
 	char* token = strtok(str, " ");
 
 	while(token != NULL){
-		printf("TOKEN : %s\n", token);
 		storeWord = strdup(token);	//add token to parsed array
 		parse[count] = storeWord;
 		token = strtok(NULL, " ");
-		printf("parsed [%d] = %s\n", count, parse[count]);
 		count++;
-	
 	}
 	parse[count++] = NULL;
 
@@ -212,12 +234,12 @@ char** parseCommand(char* cmd){
 }
 
 process* create_a_process(char* cmd){
-	printf("entered create a process\n");
 	process* prc = malloc(sizeof(process));	 // malloc space for one process
 
 	prc->pid = 0;
 	prc->input = NULL;
 	prc->output = NULL;
+	prc->error = NULL;
 	prc->next = NULL;
 	prc->proc_state = RUNNING;
 
@@ -229,10 +251,10 @@ process* create_a_process(char* cmd){
 	
 	while(parsed[i]!=NULL){
 
-		if(strcmp(parsed[i], "<") == 0)
+		if(strcmp(parsed[i], ">") == 0)
 			prc->output = parsed[i+1];
 
-		else if(strcmp(parsed[i], ">") == 0)
+		else if(strcmp(parsed[i], "<") == 0)
 			prc->input = parsed[i+1];
 
 		else if(strcmp(parsed[i], "2>") == 0)
@@ -252,31 +274,28 @@ process* create_a_process(char* cmd){
 	return prc;
 }
 
-	
 
-
-void put_job_in_fg(pid_t pgid){
+void put_job_in_fg(job* j){
 	pid_t pid1; pid_t pid2; int status;
 
-	tcsetpgrp(shell_terminal, pgid);			//give terminal control to the job
-	pid1 = waitpid(-pgid, &status, WUNTRACED);	//wait for job processes to terminate
-	pid2 = waitpid(-pgid, &status, WUNTRACED);
-
+	tcsetpgrp(shell_terminal, j->pgid);			//give terminal control to the job
+	pid1 = waitpid(-j->pgid, &status, WUNTRACED);	//wait for job processes to terminate
+	if(j->process->next)
+		pid2 = waitpid(-j->pgid, &status, WUNTRACED);
+	UPDATE_JOBS = 0;
 	tcsetpgrp(shell_terminal, shell_pgid);		//give terminal control back to shell
+	pop();
+	FOREGROUND =0;
 }
 
 
-void create_a_job(char* cmd, job* newJob, int fg){
-	static int jobID = 1;
-
+void create_a_job(char* cmd, job* newJob){
 	char* process_string[2];
 	int pipeFlag;
 
 	process* processA;
 	process* processB;
 	pipeFlag = parseForPipe(cmd, process_string);
-	printf("proc string 1: %s\n", process_string[0]);
-	printf("proc string 2: %s\n", process_string[1]);
 
 	if(pipeFlag){
 		processA = create_a_process(process_string[0]);
@@ -290,14 +309,13 @@ void create_a_job(char* cmd, job* newJob, int fg){
 	}
 
 	newJob->jobString = cmd;
-	newJob->jobID = jobID++;
-	newJob->foreground = fg;
+	newJob->jobID = head == NULL ? 1 : head->job->jobID + 1;
 	newJob->process = processA;
 
 	push(newJob);
 }
 
-void run_job(job* j){
+void run_job(job* j) {
 	process* p1;
 	process* p2;
 	pid_t pid;
@@ -315,27 +333,26 @@ void run_job(job* j){
 			j->pgid = pid; //recording the parent pgid as the job pgid
 			
 			if(p1->input){			//setting up input file redirects if they exist
-			in = open(p1->input, O_RDONLY);
+			in = open(p1->input, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
 			dup2(in, STDIN_FILENO);
 			close(in);
 			}
 
 			if(p1->output){			//setting up output file redirects if they exist
-				out = creat(p1->output, 0644);
+				out = open(p1->output, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
 				dup2(out, STDOUT_FILENO);    //ERROR!!!!!!!!!!!!!!!!!!!!!!!!!!1
 				close(out);
 			}
 
 			if(p1->error){
-				error = creat(p1->error, 0644);
+				error = open(p1->error, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
 				dup2(error, STDERR_FILENO);
 				close(error);
 			}
-		//	printf("executing %s %s \n", p1->argv[0], p1->argv[1]);
+			tcsetpgrp(shell_terminal, j->pgid);			//give terminal control to the job
 			execvp(p1->argv[0], p1->argv);	//run process 1 after setting redirects
 		} 
 		else if(pid>0){
-		//	printf("returned to parent \n");
 			setpgid(pid, pid);	//setting the pid of the child to the pgid of the parent
 			j->pgid = pid; //recording the parent pgid as the job pgid
 			p1->pid = pid;	//setting process 1 pid to be the pgid	
@@ -351,7 +368,6 @@ void run_job(job* j){
 			pid = fork();
 
 			if(pid == 0){
-			//	printf("Entered child\n");
 				setpgid(pid, pid);
 				j->pgid = pid;
 
@@ -362,24 +378,21 @@ void run_job(job* j){
 				}
 
 				if(!(p1->output)){				//if there is no output redirect file
-					//printf("no output redirects\n");
 					dup2(pipefd[1], STDOUT_FILENO);	//set up output of process 1 to input of next process
 					close(pipefd[1]);
-					//printf("dup2 returns %d", pid);
-				//	printf("executing %s\n", p1->argv[0]);
+					tcsetpgrp(shell_terminal, j->pgid);			//give terminal control to the job
 					execvp(p1->argv[0], p1->argv);
 				}
 				else{
 					out = creat(p1->output, 0644);	//otherwise, set up output redirects
 					dup2(out, STDOUT_FILENO);
 					close(out);
+					tcsetpgrp(shell_terminal, j->pgid);			//give terminal control to the job
 					execvp(p1->argv[0], p1->argv);
 				}
 
 			}
 			else if(pid>0){
-				waitpid(pid, NULL, 0);
-			//	printf("returned to parent\n");
 				setpgid(pid, pid);
 				j->pgid = pid;
 
@@ -389,7 +402,6 @@ void run_job(job* j){
 				pid = fork();
 
 				if(pid == 0){
-				//	printf("Entered 2nd child \n");
 					if(p2->input){			//setup input file redirects
 						in = open(p2->input, O_RDONLY);
 						dup2(in, STDIN_FILENO);
@@ -412,26 +424,23 @@ void run_job(job* j){
 						close(error);
 					}
 					
-				//	printf("executing %s\n", p2->argv[0]);
+					tcsetpgrp(shell_terminal, j->pgid);			//give terminal control to the job
 					execvp(p2->argv[0], p2->argv);	// run process 2
 				}
 				else if(pid>0){
-					waitpid(pid, NULL, 0);
 					p2->pid = pid; //storing the child's process id (that was returned in the parent) 
 
 				}
 
 			}
 	}
-	if(j->foreground){
-		put_job_in_fg(j->pgid);
+	if(FOREGROUND){
+		put_job_in_fg(j);
 	}
 	
 }
 
-
 void set_process_status(pid_t pid, enum status proc_state){
-
 	jobNode* i = head;
 	process* prc;
 	job* j;
@@ -439,6 +448,7 @@ void set_process_status(pid_t pid, enum status proc_state){
 	for(j = i->job; j!=NULL; j = i->next->job){
 		for(prc = j->process; prc!=NULL; prc = prc->next){
 			if(prc->pid == pid){
+				
 				prc->proc_state = proc_state;
 				return;
 			}
@@ -446,62 +456,68 @@ void set_process_status(pid_t pid, enum status proc_state){
 	}
 }
 
-
-void sigCHLDHandler(int signum){
-	printf("Entered sig handler\n");
-	pid_t pid;
-	int status;
-
-	pid = waitpid(-1, &status, WUNTRACED);
-
-		if(WIFSTOPPED(status)){
-			set_process_status(pid, STOPPED);
-			printf("changed process state");
+void update_job_status(){
+	pid_t pid; int status;
+	if(UPDATE_JOBS){
+		while((pid = waitpid(-1, &status, WUNTRACED | WNOHANG)) > 0){
+			
+			if(WIFEXITED(status) || WIFSIGNALED(status)) {
+				set_process_status(pid, DONE);
+			}
+			else if(WIFSTOPPED(status)) {
+				set_process_status(pid, STOPPED);
+			}
 		}
+	}
 
-		if(WIFEXITED(status)){
-			set_process_status(pid, TERMINATED);
-			printf("changed process state");
-		}
-
+	UPDATE_JOBS = 0;
 }
 
+void SIGCHLD_handler(int signum){
+	UPDATE_JOBS = 1;
+}
+
+void SIGTSTP_handler() {
+	UPDATE_JOBS = 1;
+}
 
 int main(){
-
-	// initializations
-	head = NULL;
-
 	char* input;
 	char* piped[2];
 	job* j;
-	int fg;
+
 
 	init_shell();
 
-	//signal(SIGINT, SIG_IGN);
+	signal(SIGINT, SIGTSTP_handler);
+	signal(SIGTSTP, SIGTSTP_handler);
 	signal(SIGTTOU, SIG_IGN);
-	signal(SIGCHLD, sigCHLDHandler);
+	signal(SIGCHLD, SIGCHLD_handler);
 
 	while(1){
 		input = readline("$ ");
+		if(input == NULL)
+			break;
+		update_job_status();
+		update_job_stack();
 
 		if(strcmp(input, "jobs") == 0){
-			//printf("*************PRINTING JOB STACK*******************\n");
 			printStack(head);
 			continue;
 		}
+		
+		/*else if(strcmp(input, "fg") == 0){
+			jobNode* j;
+			j=pop(head);
+			//put_job_in_fg(j->job->pgid);
+			continue;
+		}*/
 
-		if(strcmp(input, "fg") == 0){
-			
-		}
-
-		fg = parseForBlocking(input);
+		FOREGROUND = parseForBlocking(input);
 
 		j = malloc(sizeof(job));
-		create_a_job(input, j, fg);
+		create_a_job(input, j);
 		run_job(j);
-
 	}
 }
 
